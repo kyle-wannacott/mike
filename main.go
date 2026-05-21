@@ -23,7 +23,9 @@ func main() {
 	verbose := flag.Bool("verbose", false, "Show detailed debug output")
 	flag.BoolVar(verbose, "v", false, "Show detailed debug output")
 	testMic := flag.Bool("test-mic", false, "Test microphone: record 3s and transcribe")
-	captureSec := flag.Int("capture", 0, "Record for N seconds, transcribe, type, and exit (works as a desktop shortcut)")
+	captureSec := flag.Int("capture", 0, "Record for N seconds, transcribe, type, and exit")
+	liveMode := flag.Bool("live", false, "Toggle live dictation on/off (continuous transcription)")
+	liveDaemon := flag.Bool("live-daemon", false, "Internal: live dictation background process")
 	flag.Parse()
 
 	if *showHelp {
@@ -43,25 +45,34 @@ func main() {
 		return
 	}
 
+	if *liveDaemon {
+		cfg, err := LoadConfig()
+		if err != nil {
+			log.Fatalf("Config error: %v", err)
+		}
+		runLiveDaemon(cfg)
+		return
+	}
+
+	if *liveMode {
+		cfg, err := LoadConfig()
+		if err != nil {
+			log.Fatalf("Config error: %v", err)
+		}
+		runLive(cfg)
+		return
+	}
+
 	if detectDisplayServer() == "wayland" {
 		fmt.Println("╔══════════════════════════════════════════════════════════╗")
-		fmt.Println("║  Wayland detected — daemon mode won't work.            ║")
-		fmt.Println("║  Use capture mode instead:                             ║")
+		fmt.Println("║  Wayland detected — use --live or --capture mode.      ║")
 		fmt.Println("║                                                       ║")
-		fmt.Println("║  1. Test it:                                           ║")
-		fmt.Println("║       mike --capture 5                                  ║")
+		fmt.Println("║  Bind to Ctrl+Space in COSMIC Settings:                ║")
+		fmt.Println("║    Command: bash -c '/path/to/mike --live'              ║")
 		fmt.Println("║                                                       ║")
-		fmt.Println("║  2. Then bind to Ctrl+Space in desktop settings:       ║")
-		fmt.Println("║       Settings → Keyboard → Keyboard Shortcuts         ║")
-		fmt.Println("║       → Custom Shortcuts → Add (+)                      ║")
-		fmt.Println("║       Name: Mike                                       ║")
-		fmt.Println("║       Command: /home/lee/Documents/mike/mike --capture 5  ║")
-		fmt.Println("║       Shortcut: Ctrl+Space                              ║")
+		fmt.Println("║  Then Ctrl+Space toggles dictation on/off.             ║")
+		fmt.Println("║  Text appears in real-time as you speak.                ║")
 		fmt.Println("╚══════════════════════════════════════════════════════════╝")
-		fmt.Println()
-		fmt.Println("Also test the pipeline directly:")
-		fmt.Println("  mike --test-mic")
-		fmt.Println()
 		os.Exit(0)
 	}
 
@@ -86,8 +97,9 @@ func printHelp() {
 	fmt.Println("mike — voice-to-text CLI tool")
 	fmt.Println()
 	fmt.Println("USAGE:")
-	fmt.Println("  mike                  Start the voice transcription daemon (X11 only)")
-	fmt.Println("  mike --capture N      Record for N seconds, transcribe & type, then exit")
+	fmt.Println("  mike                  Show help (Wayland) or start daemon (X11)")
+	fmt.Println("  mike --live           Toggle live dictation on/off (continuous)")
+	fmt.Println("  mike --capture N      Record N seconds, transcribe & type, then exit")
 	fmt.Println("  mike -h, --help       Show this help message")
 	fmt.Println("  mike -v               Run with verbose debug output")
 	fmt.Println("  mike --test-mic       Test microphone and transcription")
@@ -151,14 +163,14 @@ func printHelp() {
 	fmt.Println("  sudo cp mike /usr/local/bin/    # Install system-wide")
 	fmt.Println()
 	fmt.Println("EXAMPLES:")
-	fmt.Println("  mike                             # Run the daemon (X11)")
-	fmt.Println("  mike --capture 5                 # Capture & transcribe 5 seconds")
-	fmt.Println("  mike -v                          # Run with verbose logging")
-	fmt.Println("  MIKE_CONFIG_DIR=./config mike    # Use custom config dir")
+	fmt.Println("  mike --live                      # Toggle live dictation on/off")
+	fmt.Println("  mike --capture 5                 # Record 5s, transcribe, type, exit")
+	fmt.Println("  mike --test-mic                  # Test microphone & transcription")
+	fmt.Println("  mike -h                          # Show full help")
 	fmt.Println()
 	fmt.Println("WAYLAND USERS:")
-	fmt.Println("  Bind 'mike --capture 5' to Ctrl+Space in:")
-	fmt.Println("    Settings → Keyboard → Keyboard Shortcuts → Custom Shortcuts")
+	fmt.Println("  Bind to Ctrl+Space in COSMIC Settings:")
+	fmt.Println("    Command: bash -c '/home/lee/Documents/mike/mike --live'")
 	fmt.Println()
 	os.Exit(0)
 }
