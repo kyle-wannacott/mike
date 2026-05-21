@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -115,6 +116,22 @@ func runLiveDaemon(cfg *Config) {
 	log.Printf("Live dictation stopped")
 }
 
+// rmsEnergy calculates the root mean square energy of audio samples.
+// Typical values: silence < 0.005, quiet speech ~0.01-0.05, loud speech ~0.05-0.3
+func rmsEnergy(samples []float32) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, s := range samples {
+		sum += float64(s * s)
+	}
+	return math.Sqrt(sum / float64(len(samples)))
+}
+
+// silenceThreshold is the energy below which audio is considered silence.
+const silenceThreshold = 0.008
+
 func runDictationLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcriber) {
 	buf := make([]float32, chunkSamples)
 
@@ -140,13 +157,12 @@ func runDictationLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 
 	log.Printf("Dictation loop started")
 
-	// Buffer for overlapping context (keeps last 6 seconds)
 	var context []float32
+	wasSilent := true
 
 	for {
 		select {
 		case <-stopCh:
-			// Flush remaining audio
 			if len(context) > 0 {
 				flushAudio(context, cfg, transcriber)
 			}
@@ -163,32 +179,69 @@ func runDictationLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 		chunk := make([]float32, len(buf))
 		copy(chunk, buf)
 
+		// ---- Silence detection ----
+		energy := rmsEnergy(chunk)
+		if energy < silenceThreshold {
+			if !wasSilent {
+				log.Printf("Silence detected (energy=%.4f), stopping typing", energy)
+				wasSilent = true
+			}
+			continue
+		}
+		wasSilent = false
+
+		// Keep context buffer for final flush
 		context = append(context, chunk...)
 		maxCtx := chunkSamples * 2
 		if len(context) > maxCtx {
 			context = context[len(context)-maxCtx:]
 		}
 
+		// ---- Transcribe ----
 		text, err := transcriber.Transcribe(chunk, cfg.Language, cfg.Threads)
 		if err != nil {
 			log.Printf("Transcription error: %v", err)
+			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
 		text = strings.TrimSpace(text)
-		if text == "" {
+
+		// Filter out common hallucination patterns
+		if text == "" || isHallucination(text) {
 			continue
 		}
 
-		log.Printf("Transcribed: %q", text)
+		log.Printf("Spoke: %q  (energy=%.4f)", text, energy)
 
+		// ---- Type ----
 		if err := TypeText(text + " "); err != nil {
 			log.Printf("Type error: %v", err)
 			if hasTool("wl-copy") {
 				exec.Command("wl-copy", text+" ").Run()
 			}
 		}
+
+		// Brief pause to let the typing complete before next chunk
+		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// isHallucination checks if whisper produced a non-speech artifact.
+func isHallucination(text string) bool {
+	lower := strings.ToLower(text)
+	hallucinations := []string{
+		"[blank_audio]", "[silence]", "[music]", "[laughter]",
+		"[applause]", "[noise]", "[typing]", "[ringing]", "[bell]",
+		"[clicking]", "[cough]", "[sigh]", "[clapping]", "[sniff]",
+		"(cough)", "(sighing)", "(sniffing)", "(clicking)",
+	}
+	for _, h := range hallucinations {
+		if strings.Contains(lower, h) {
+			return true
+		}
+	}
+	return false
 }
 
 func flushAudio(audio []float32, cfg *Config, transcriber *Transcriber) {
