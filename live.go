@@ -224,7 +224,8 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 	}
 
 	state := newStreamState()
-	lastWindow := "" // last transcription from the overlapping window
+	lastWindow := ""     // last transcription from the overlapping window
+	lastTypedAll := ""   // all text typed so far (for dedup)
 
 	log.Printf("Streaming loop started")
 
@@ -260,8 +261,12 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 				text, _ := transcriber.Transcribe(final, cfg.Language, cfg.Threads)
 				text = cleanTranscript(text)
 				if text != "" && text != lastWindow {
-					log.Printf("Final: %q", text)
-					typedText(text)
+					// Don't flush text already typed during live session
+					flushPart := findNewText(text, lastTypedAll)
+					if flushPart != "" {
+						log.Printf("Final: %q", flushPart)
+						typedText(flushPart)
+					}
 				}
 			}
 			return
@@ -309,6 +314,21 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 				continue
 			}
 
+			// Skip short fragments that look like trailing duplicates
+			// e.g. "twice" after "Why did you type it twice?"
+			if len(newPart) < 10 {
+				lower := strings.ToLower(newPart)
+				lastLower := strings.ToLower(lastTypedAll)
+				if strings.Contains(lastLower, lower) {
+					log.Printf("Skipping duplicate short fragment: %q", newPart)
+					continue
+				}
+			}
+
+			if lastTypedAll != "" {
+				lastTypedAll += " "
+			}
+			lastTypedAll += newPart
 			typedText(newPart)
 		}
 	}
