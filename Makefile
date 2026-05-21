@@ -21,7 +21,7 @@ UNAME_S := $(shell uname -s)
 # CGO flags for linking against the built whisper library
 # Use absolute paths so cgo can find them regardless of the working directory
 CGO_CFLAGS := -I$(abspath $(WHISPER_DIR)/include) -I$(abspath $(WHISPER_DIR)/ggml/include)
-CGO_LDFLAGS := -L$(abspath $(WHISPER_BUILD)/src) -L$(abspath $(WHISPER_BUILD)/ggml/src) -lwhisper -lggml -lggml-base -lggml-cpu -lm -lstdc++
+CGO_LDFLAGS := -L$(abspath $(WHISPER_BUILD)/src) -L$(abspath $(WHISPER_BUILD)/ggml/src) -L$(abspath $(WHISPER_BUILD)/ggml/src/ggml-vulkan) -lwhisper -lggml -lggml-base -lggml-cpu -lggml-vulkan -lm -lstdc++ -lvulkan
 
 ifeq ($(UNAME_S), Linux)
 CGO_LDFLAGS += -fopenmp
