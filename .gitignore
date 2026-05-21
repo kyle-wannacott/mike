@@ -1,0 +1,30 @@
+# Binaries
+/mike
+/voicewriter
+*.exe
+
+# Whisper C library build artifacts
+whisper.cpp/build/
+whisper.cpp/.git/
+whisper.cpp/*.o
+whisper.cpp/*.a
+
+# Downloaded models
+models/ggml-*.bin
+
+# Config with local paths
+config.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Go
+*.test
+*.out
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
