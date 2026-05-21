@@ -7,9 +7,9 @@ WHISPER_BUILD := $(WHISPER_DIR)/build
 MODEL_DIR := models
 BINARY := mike
 
-# Whisper model (tiny - ~75MB, lowest resource usage)
-MODEL_URL := https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
-MODEL_FILE := $(MODEL_DIR)/ggml-tiny.bin
+# Whisper model (small - ~466MB, good accuracy, ~4x realtime)
+MODEL_URL := https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+MODEL_FILE := $(MODEL_DIR)/ggml-small.bin
 
 # Silero VAD model (~864KB, for voice activity detection)
 VAD_MODEL_URL := https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin
@@ -75,7 +75,7 @@ $(VAD_MODEL_FILE):
 install-model: $(MODEL_FILE) $(VAD_MODEL_FILE)
 	@echo "Installing models to ~/.config/mike/models/..."
 	mkdir -p ~/.config/mike/models
-	cp $(MODEL_FILE) ~/.config/mike/models/ggml-tiny.bin
+	cp $(MODEL_FILE) ~/.config/mike/models/ggml-small.bin
 	cp $(VAD_MODEL_FILE) ~/.config/mike/models/ggml-silero-vad.bin
 	@echo "Models installed."
 

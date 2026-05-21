@@ -32,7 +32,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
-		ModelPath:       filepath.Join(home, ".config", "mike", "models", "ggml-tiny.bin"),
+		ModelPath:       filepath.Join(home, ".config", "mike", "models", "ggml-small.bin"),
 		VADModelPath:    filepath.Join(home, ".config", "mike", "models", "ggml-silero-vad.bin"),
 		Language:        "en",
 		Threads:         4,
