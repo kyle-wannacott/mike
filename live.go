@@ -20,8 +20,8 @@ import (
 
 const (
 	livePidFile = "/tmp/mike-live.pid"
-	// Window of audio sent to whisper each cycle (3 seconds gives good context)
-	windowSize = 16000 * 3 // 3 seconds at 16kHz
+	// Window of audio sent to whisper each cycle (2 seconds — good balance of speed vs context)
+	windowSize = 16000 * 2 // 2 seconds at 16kHz
 	// Minimum RMS energy to consider as speech (below this = silence)
 	silenceThreshold = 0.006
 )
@@ -224,7 +224,7 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 	}
 
 	state := newStreamState()
-	lastTyped := ""
+	lastWindow := "" // last transcription from the overlapping window
 
 	log.Printf("Streaming loop started")
 
@@ -247,8 +247,8 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 		}
 	}()
 
-	// Timer for processing intervals (~1 second)
-	ticker := time.NewTicker(time.Second)
+	// Timer for processing intervals (every 500ms for responsive updates)
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -259,9 +259,9 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 			if len(final) > SampleRate/2 && rmsEnergy(final) > silenceThreshold {
 				text, _ := transcriber.Transcribe(final, cfg.Language, cfg.Threads)
 				text = cleanTranscript(text)
-				if text != "" && text != lastTyped {
+				if text != "" && text != lastWindow {
 					log.Printf("Final: %q", text)
-					typedText(text, &lastTyped)
+					typedText(text)
 				}
 			}
 			return
@@ -294,19 +294,28 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 
 			log.Printf("Window: %q  (energy=%.4f)", text, energy)
 
-			newPart := findNewText(text, lastTyped)
+			// Don't re-type identical text
+			if text == lastWindow {
+				log.Printf("Same as last window, skipping")
+				continue
+			}
+
+			// Only type the newly spoken portion
+			newPart := findNewText(text, lastWindow)
+			log.Printf("Window: %q → New: %q", text, newPart)
+			lastWindow = text
+
 			if newPart == "" {
 				continue
 			}
 
-			log.Printf("New: %q", newPart)
-			typedText(newPart, &lastTyped)
+			typedText(newPart)
 		}
 	}
 }
 
-// findNewText compares new transcription with previously typed text
-// and returns only the newly transcribed portion.
+// findNewText returns only the newly spoken portion by comparing
+// new transcription against the previous one.
 func findNewText(newText, oldText string) string {
 	newText = strings.TrimSpace(newText)
 	if newText == "" {
@@ -316,41 +325,57 @@ func findNewText(newText, oldText string) string {
 		return newText
 	}
 
-	// Normalize spaces for comparison
-	normNew := reMultiSpace.ReplaceAllString(newText, " ")
-	normOld := reMultiSpace.ReplaceAllString(oldText, " ")
-
-	// If the new text is shorter or same, nothing new
-	if len(normNew) <= len(normOld) {
-		return ""
+	// Check how much of the start matches (case-insensitive)
+	minLen := len(oldText)
+	if len(newText) < minLen {
+		minLen = len(newText)
+	}
+	matchLen := 0
+	for i := 0; i < minLen; i++ {
+		a, b := newText[i], oldText[i]
+		if a >= 'A' && a <= 'Z' {
+			a += 32
+		}
+		if b >= 'A' && b <= 'Z' {
+			b += 32
+		}
+		if a == b {
+			matchLen++
+		} else {
+			break
+		}
 	}
 
-	// Check if old text is a prefix of new text (common case)
-	if strings.HasPrefix(strings.ToLower(normNew), strings.ToLower(normOld)) {
-		return strings.TrimSpace(newText[len(oldText):])
+	// If most of the old text matches at the start, return only the new suffix
+	if float64(matchLen)/float64(len(oldText)) >= 0.6 {
+		suffix := strings.TrimSpace(newText[matchLen:])
+		if suffix != "" {
+			return suffix
+		}
 	}
 
-	// Otherwise, return the entire new text (might be a different take)
-	// but only if it's significantly different
-	if len(normNew) > len(normOld)*2 || !strings.Contains(strings.ToLower(normNew), strings.ToLower(normOld)) {
-		return newText
-	}
-
-	return ""
+	// If the texts are very different, return the full new text
+	return newText
 }
 
-// typedText types the text and updates the lastTyped tracker.
-func typedText(text string, lastTyped *string) {
+// typedText types the text into the focused window.
+func typedText(text string) {
 	if text == "" {
 		return
 	}
+	log.Printf("Typing: %q", text)
 	if err := TypeText(text + " "); err != nil {
-		log.Printf("Type error: %v", err)
+		log.Printf("TypeText failed: %v — trying clipboard fallback", err)
 		if hasTool("wl-copy") {
-			exec.Command("wl-copy", text+" ").Run()
+			if err := exec.Command("wl-copy", text+" ").Run(); err != nil {
+				log.Printf("wl-copy also failed: %v", err)
+			} else {
+				log.Printf("Copied to clipboard instead (manual Ctrl+V needed)")
+			}
 		}
+	} else {
+		log.Printf("Typed successfully")
 	}
-	*lastTyped = text
 }
 
 // ---- PID file helpers ----
