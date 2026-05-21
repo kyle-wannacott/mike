@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,13 +20,20 @@ import (
 
 const (
 	livePidFile = "/tmp/mike-live.pid"
-	chunkDur    = 3 * time.Second
+	// Window of audio sent to whisper each cycle (3 seconds gives good context)
+	windowSize = 16000 * 3 // 3 seconds at 16kHz
+	// Minimum RMS energy to consider as speech (below this = silence)
+	silenceThreshold = 0.006
 )
 
-var chunkSamples = int(SampleRate * chunkDur.Seconds())
+// Pre-compiled regexes for cleaning transcription artifacts
+var (
+	reArtifact   = regexp.MustCompile(`\[.*?\]`)
+	reArtifact2  = regexp.MustCompile(`\(.*?\)`)
+	reMultiSpace = regexp.MustCompile(`\s+`)
+)
 
 // runLive toggles the live dictation mode on/off.
-// First call: starts background daemon. Second call: stops it.
 func runLive(cfg *Config) {
 	pid, err := readPidFile(livePidFile)
 	if err == nil && isProcessRunning(pid) {
@@ -38,7 +46,6 @@ func runLive(cfg *Config) {
 func startLiveDaemon(cfg *Config) {
 	fmt.Println("🎙️  Mike live dictation starting... (press Ctrl+Space again to stop)")
 
-	// Re-invoke ourselves as a background daemon
 	args := os.Args
 	daemonArgs := make([]string, 0, len(args))
 	daemonArgs = append(daemonArgs, args[0])
@@ -69,7 +76,6 @@ func stopLiveDaemon(pid int) {
 	fmt.Println("⏹️  Stopping live dictation...")
 	if proc, err := os.FindProcess(pid); err == nil {
 		proc.Signal(syscall.SIGTERM)
-		// Give it a moment to clean up
 		time.Sleep(200 * time.Millisecond)
 	}
 	os.Remove(livePidFile)
@@ -81,7 +87,6 @@ func runLiveDaemon(cfg *Config) {
 	writePidFile(livePidFile, os.Getpid())
 	defer os.Remove(livePidFile)
 
-	// Log to file
 	logFile, err := os.Create("/tmp/mike-live.log")
 	if err == nil {
 		log.SetOutput(logFile)
@@ -89,7 +94,6 @@ func runLiveDaemon(cfg *Config) {
 	}
 	log.Printf("Live daemon started (PID %d)", os.Getpid())
 
-	// Handle stop signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
@@ -114,12 +118,58 @@ func runLiveDaemon(cfg *Config) {
 		close(stopCh)
 	}()
 
-	runDictationLoop(stopCh, cfg, transcriber)
+	runStreamingLoop(stopCh, cfg, transcriber)
 	log.Printf("Live dictation stopped")
 }
 
-// rmsEnergy calculates the root mean square energy of audio samples.
-// Typical values: silence < 0.005, quiet speech ~0.01-0.05, loud speech ~0.05-0.3
+// ---- Streaming dictation with overlapping windows ----
+
+// streamState holds the rolling audio buffer and dedup state.
+type streamState struct {
+	mu          sync.Mutex
+	ring        []float32 // circular buffer of recent audio
+	writePos    int       // current write position in ring
+	totalWritten int     // total samples ever written
+	lastText    string   // last transcribed text (for dedup)
+}
+
+func newStreamState() *streamState {
+	return &streamState{
+		ring: make([]float32, windowSize),
+	}
+}
+
+func (s *streamState) writeSamples(samples []float32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sample := range samples {
+		s.ring[s.writePos] = sample
+		s.writePos = (s.writePos + 1) % len(s.ring)
+	}
+	s.totalWritten += len(samples)
+}
+
+// getLastN returns the last N samples from the ring buffer (or fewer if not enough data).
+func (s *streamState) getLastN(n int) []float32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.totalWritten < n {
+		n = s.totalWritten
+	}
+	if n <= 0 {
+		return nil
+	}
+
+	result := make([]float32, n)
+	start := (s.writePos - n + len(s.ring)) % len(s.ring)
+	for i := 0; i < n; i++ {
+		result[i] = s.ring[(start+i)%len(s.ring)]
+	}
+	return result
+}
+
+// rmsEnergy calculates RMS energy of audio samples.
 func rmsEnergy(samples []float32) float64 {
 	if len(samples) == 0 {
 		return 0
@@ -131,21 +181,21 @@ func rmsEnergy(samples []float32) float64 {
 	return math.Sqrt(sum / float64(len(samples)))
 }
 
-// silenceThreshold is the energy below which audio is considered silence.
-// Lower = more sensitive to speech. Adjust if you have a noisy mic.
-const silenceThreshold = 0.006
+// cleanTranscript removes artifact tags from transcribed text.
+func cleanTranscript(text string) string {
+	text = reArtifact.ReplaceAllString(text, "")
+	text = reArtifact2.ReplaceAllString(text, "")
+	text = strings.TrimSpace(text)
+	text = reMultiSpace.ReplaceAllString(text, " ")
+	return text
+}
 
-// Pre-compiled regexes for cleaning transcription artifacts
-var (
-	reArtifact   = regexp.MustCompile(`\[.*?\]`)
-	reArtifact2  = regexp.MustCompile(`\(.*?\)`)
-	reMultiSpace = regexp.MustCompile(`\s+`)
-)
+// runStreamingLoop records continuously and transcribes overlapping windows.
+// New text is detected by comparing with previous transcription.
+func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcriber) {
+	buf := make([]float32, 2048) // small buffer for microphone reads (128ms)
 
-func runDictationLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcriber) {
-	buf := make([]float32, chunkSamples)
-
-	stream, err := portaudio.OpenDefaultStream(1, 0, SampleRate, chunkSamples, buf)
+	stream, err := portaudio.OpenDefaultStream(1, 0, SampleRate, len(buf), buf)
 	if err != nil {
 		log.Printf("Failed to open audio stream: %v", err)
 		return
@@ -159,116 +209,129 @@ func runDictationLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 	defer stream.Stop()
 
 	// Drain stale data
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 10; i++ {
 		if err := stream.Read(); err != nil {
 			break
 		}
 	}
 
-	log.Printf("Dictation loop started")
+	state := newStreamState()
+	lastTyped := "" // text we've already typed
 
-	var context []float32
-	wasSilent := true
+	log.Printf("Streaming loop started")
+
+	// Timer for processing intervals (~1 second)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-stopCh:
-			if len(context) > 0 {
-				flushAudio(context, cfg, transcriber)
+			log.Printf("Stop signal, flushing...")
+			// Do one final transcription of the last 2 seconds
+			final := state.getLastN(windowSize)
+			if len(final) > SampleRate/2 && rmsEnergy(final) > silenceThreshold {
+				text, _ := transcriber.Transcribe(final, cfg.Language, cfg.Threads)
+				text = cleanTranscript(text)
+				if text != "" && text != lastTyped {
+					lastTyped = text
+					log.Printf("Final: %q", text)
+					typedText(text, &lastTyped)
+				}
 			}
 			return
+		case <-ticker.C:
+			// Process the latest audio window
+			window := state.getLastN(windowSize)
+			if len(window) == 0 {
+				continue
+			}
+
+			energy := rmsEnergy(window)
+			if energy < silenceThreshold {
+				continue
+			}
+
+			text, err := transcriber.Transcribe(window, cfg.Language, cfg.Threads)
+			if err != nil {
+				log.Printf("Transcription error: %v", err)
+				continue
+			}
+
+			text = cleanTranscript(text)
+			if text == "" {
+				continue
+			}
+
+			log.Printf("Window: %q  (energy=%.4f)", text, energy)
+
+			// Find new text since last typing
+			newPart := findNewText(text, lastTyped)
+			if newPart == "" {
+				continue
+			}
+
+			log.Printf("New: %q", newPart)
+			typedText(newPart, &lastTyped)
+
 		default:
-		}
-
-		if err := stream.Read(); err != nil {
-			log.Printf("Stream read error: %v", err)
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-
-		chunk := make([]float32, len(buf))
-		copy(chunk, buf)
-
-		// ---- Silence detection ----
-		energy := rmsEnergy(chunk)
-		if energy < silenceThreshold {
-			if !wasSilent {
-				log.Printf("Silence detected (energy=%.4f), stopping typing", energy)
-				wasSilent = true
+			// Read audio from microphone
+			if err := stream.Read(); err != nil {
+				continue
 			}
-			continue
+			chunk := make([]float32, len(buf))
+			copy(chunk, buf)
+			state.writeSamples(chunk)
 		}
-		wasSilent = false
-
-		// Keep context buffer for final flush
-		context = append(context, chunk...)
-		maxCtx := chunkSamples * 2
-		if len(context) > maxCtx {
-			context = context[len(context)-maxCtx:]
-		}
-
-		// ---- Transcribe ----
-		text, err := transcriber.Transcribe(chunk, cfg.Language, cfg.Threads)
-		if err != nil {
-			log.Printf("Transcription error: %v", err)
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-
-		// Strip artifact tags like [BLANK_AUDIO], (coughing), etc.
-		text = cleanTranscript(text)
-
-		if text == "" {
-			continue
-		}
-
-		log.Printf("Spoke: %q  (energy=%.4f)", text, energy)
-
-		// ---- Type ----
-		if err := TypeText(text + " "); err != nil {
-			log.Printf("Type error: %v", err)
-			if hasTool("wl-copy") {
-				exec.Command("wl-copy", text+" ").Run()
-			}
-		}
-
-		// Brief pause to let the typing complete before next chunk
-		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-// cleanTranscript removes whisper artifact tags like [BLANK_AUDIO], (coughing), etc.
-// from the transcribed text. This handles the case where artifacts are interleaved
-// with actual speech in the same transcription segment.
-func cleanTranscript(text string) string {
-	// Remove [WORD] style artifacts (case-insensitive)
-	text = reArtifact.ReplaceAllString(text, "")
+// findNewText compares new transcription with previously typed text
+// and returns only the newly transcribed portion.
+func findNewText(newText, oldText string) string {
+	newText = strings.TrimSpace(newText)
+	if newText == "" {
+		return ""
+	}
+	if oldText == "" {
+		return newText
+	}
 
-	// Remove (word) style artifacts like (coughing), (sighing), etc.
-	text = reArtifact2.ReplaceAllString(text, "")
+	// Normalize spaces for comparison
+	normNew := reMultiSpace.ReplaceAllString(newText, " ")
+	normOld := reMultiSpace.ReplaceAllString(oldText, " ")
 
-	// Clean up extra spaces
-	text = strings.TrimSpace(text)
-	text = reMultiSpace.ReplaceAllString(text, " ")
+	// If the new text is shorter or same, nothing new
+	if len(normNew) <= len(normOld) {
+		return ""
+	}
 
-	return text
+	// Check if old text is a prefix of new text (common case)
+	if strings.HasPrefix(strings.ToLower(normNew), strings.ToLower(normOld)) {
+		return strings.TrimSpace(newText[len(oldText):])
+	}
+
+	// Otherwise, return the entire new text (might be a different take)
+	// but only if it's significantly different
+	if len(normNew) > len(normOld)*2 || !strings.Contains(strings.ToLower(normNew), strings.ToLower(normOld)) {
+		return newText
+	}
+
+	return ""
 }
 
-func flushAudio(audio []float32, cfg *Config, transcriber *Transcriber) {
-	if len(audio) < int(SampleRate/2) {
-		return
-	}
-	text, err := transcriber.Transcribe(audio, cfg.Language, cfg.Threads)
-	if err != nil {
-		log.Printf("Final transcription error: %v", err)
-		return
-	}
-	text = cleanTranscript(text)
+// typedText types the text and updates the lastTyped tracker.
+func typedText(text string, lastTyped *string) {
 	if text == "" {
 		return
 	}
-	log.Printf("Final flush: %q", text)
-	TypeText(text)
+	if err := TypeText(text + " "); err != nil {
+		log.Printf("Type error: %v", err)
+		if hasTool("wl-copy") {
+			exec.Command("wl-copy", text+" ").Run()
+		}
+	}
+	*lastTyped = text
 }
 
 // ---- PID file helpers ----
