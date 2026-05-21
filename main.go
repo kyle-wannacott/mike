@@ -357,6 +357,14 @@ func run() {
 // runCapture records for N seconds, transcribes, and types the text.
 // This is designed to be triggered by a desktop keyboard shortcut.
 func runCapture(seconds int) {
+	// Log errors to a file for debugging shortcut issues
+	logFile, err := os.Create("/tmp/mike.log")
+	if err == nil {
+		log.SetOutput(logFile)
+		defer logFile.Close()
+	}
+	log.Printf("mike --capture %d started", seconds)
+
 	cfg, err := LoadConfig()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -366,43 +374,58 @@ func runCapture(seconds int) {
 		log.Fatalf("Failed to initialize audio: %v", err)
 	}
 	defer portaudio.Terminate()
+	log.Printf("Audio initialized")
 
 	transcriber, err := NewTranscriber(cfg.ModelPath)
 	if err != nil {
 		log.Fatalf("Failed to load model: %v", err)
 	}
 	defer transcriber.Close()
+	log.Printf("Model loaded: %s", cfg.ModelPath)
 
 	stopCh := make(chan struct{})
 	go func() {
 		time.Sleep(time.Duration(seconds) * time.Second)
 		close(stopCh)
+		log.Printf("Recording timeout after %ds", seconds)
 	}()
 
+	log.Printf("Recording for %d seconds...", seconds)
 	audio, err := RecordAudio(stopCh)
 	if err != nil {
 		log.Printf("Recording error: %v", err)
 		return
 	}
+	log.Printf("Recorded %d samples (%.1f seconds)", len(audio), float64(len(audio))/SampleRate)
 	if len(audio) == 0 {
+		log.Printf("No audio captured")
 		return
 	}
 
+	log.Printf("Transcribing...")
 	text, err := transcriber.Transcribe(audio, cfg.Language, cfg.Threads)
 	if err != nil {
 		log.Printf("Transcription error: %v", err)
 		return
 	}
+	log.Printf("Transcribed: %q", text)
 	if text == "" {
+		log.Printf("Empty transcription")
 		return
 	}
 
+	log.Printf("Typing text...")
 	// Try to type, fall back to clipboard
 	if err := TypeText(text); err != nil {
+		log.Printf("TypeText error: %v", err)
 		if hasTool("wl-copy") {
+			log.Printf("Falling back to wl-copy")
 			execCommand("wl-copy", text)
 		}
+	} else {
+		log.Printf("Text typed successfully")
 	}
+	log.Printf("mike --capture done")
 }
 
 // runMicTest records 3 seconds of audio and transcribes it for testing.
