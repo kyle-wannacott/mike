@@ -112,8 +112,16 @@ func runLiveDaemon(cfg *Config) {
 	log.Printf("Model loaded (VAD: %v)", cfg.VADModelPath != "")
 
 	stopCh := make(chan struct{})
+	startTime := time.Now()
 	go func() {
 		<-sigCh
+		// Ignore stop signals within the first 2 seconds (prevents double-fire
+		// from desktop shortcuts that trigger on both key-down and key-up)
+		if time.Since(startTime) < 2*time.Second {
+			log.Printf("Ignoring stop signal during startup guard (%.0fms)",
+				time.Since(startTime).Seconds()*1000)
+			return
+		}
 		log.Printf("Stop signal received")
 		close(stopCh)
 	}()
