@@ -23,7 +23,7 @@ const (
 	// Window of audio sent to whisper each cycle (2 seconds — good balance of speed vs context)
 	windowSize = 16000 * 2 // 2 seconds at 16kHz
 	// Minimum RMS energy to consider as speech (below this = silence)
-	silenceThreshold = 0.006
+	silenceThreshold = 0.003
 )
 
 // Pre-compiled regexes for cleaning transcription artifacts
