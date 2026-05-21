@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -131,7 +132,15 @@ func rmsEnergy(samples []float32) float64 {
 }
 
 // silenceThreshold is the energy below which audio is considered silence.
-const silenceThreshold = 0.008
+// Lower = more sensitive to speech. Adjust if you have a noisy mic.
+const silenceThreshold = 0.006
+
+// Pre-compiled regexes for cleaning transcription artifacts
+var (
+	reArtifact   = regexp.MustCompile(`\[.*?\]`)
+	reArtifact2  = regexp.MustCompile(`\(.*?\)`)
+	reMultiSpace = regexp.MustCompile(`\s+`)
+)
 
 func runDictationLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcriber) {
 	buf := make([]float32, chunkSamples)
@@ -206,10 +215,10 @@ func runDictationLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 			continue
 		}
 
-		text = strings.TrimSpace(text)
+		// Strip artifact tags like [BLANK_AUDIO], (coughing), etc.
+		text = cleanTranscript(text)
 
-		// Filter out common hallucination patterns
-		if text == "" || isHallucination(text) {
+		if text == "" {
 			continue
 		}
 
@@ -228,21 +237,21 @@ func runDictationLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 	}
 }
 
-// isHallucination checks if whisper produced a non-speech artifact.
-func isHallucination(text string) bool {
-	lower := strings.ToLower(text)
-	hallucinations := []string{
-		"[blank_audio]", "[silence]", "[music]", "[laughter]",
-		"[applause]", "[noise]", "[typing]", "[ringing]", "[bell]",
-		"[clicking]", "[cough]", "[sigh]", "[clapping]", "[sniff]",
-		"(cough)", "(sighing)", "(sniffing)", "(clicking)",
-	}
-	for _, h := range hallucinations {
-		if strings.Contains(lower, h) {
-			return true
-		}
-	}
-	return false
+// cleanTranscript removes whisper artifact tags like [BLANK_AUDIO], (coughing), etc.
+// from the transcribed text. This handles the case where artifacts are interleaved
+// with actual speech in the same transcription segment.
+func cleanTranscript(text string) string {
+	// Remove [WORD] style artifacts (case-insensitive)
+	text = reArtifact.ReplaceAllString(text, "")
+
+	// Remove (word) style artifacts like (coughing), (sighing), etc.
+	text = reArtifact2.ReplaceAllString(text, "")
+
+	// Clean up extra spaces
+	text = strings.TrimSpace(text)
+	text = reMultiSpace.ReplaceAllString(text, " ")
+
+	return text
 }
 
 func flushAudio(audio []float32, cfg *Config, transcriber *Transcriber) {
@@ -254,7 +263,7 @@ func flushAudio(audio []float32, cfg *Config, transcriber *Transcriber) {
 		log.Printf("Final transcription error: %v", err)
 		return
 	}
-	text = strings.TrimSpace(text)
+	text = cleanTranscript(text)
 	if text == "" {
 		return
 	}
