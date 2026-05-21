@@ -218,6 +218,7 @@ func run() {
 			"Make sure the model file exists at: %s\n"+
 			"Run 'make model' to download it.", err, cfg.ModelPath)
 	}
+	transcriber.SetVADModel(cfg.VADModelPath)
 	defer transcriber.Close()
 	fmt.Println("Whisper model loaded.")
 
@@ -392,6 +393,7 @@ func runCapture(seconds int) {
 	if err != nil {
 		log.Fatalf("Failed to load model: %v", err)
 	}
+	transcriber.SetVADModel(cfg.VADModelPath)
 	defer transcriber.Close()
 	log.Printf("Model loaded: %s", cfg.ModelPath)
 
@@ -461,6 +463,7 @@ func runMicTest() {
 	if err != nil {
 		log.Fatalf("Failed to load model: %v", err)
 	}
+	transcriber.SetVADModel(cfg.VADModelPath)
 	defer transcriber.Close()
 	fmt.Println("Whisper model loaded.")
 	fmt.Println()

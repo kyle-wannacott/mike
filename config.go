@@ -13,6 +13,8 @@ import (
 type Config struct {
 	// Path to the whisper model file (ggml format, e.g. ggml-tiny.bin)
 	ModelPath string `json:"model_path"`
+	// Path to Silero VAD model (optional, enables voice activity detection)
+	VADModelPath string `json:"vad_model_path"`
 	// Language for transcription (e.g. "en", "auto")
 	Language string `json:"language"`
 	// Number of CPU threads to use for inference
@@ -31,6 +33,7 @@ func DefaultConfig() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
 		ModelPath:       filepath.Join(home, ".config", "mike", "models", "ggml-tiny.bin"),
+		VADModelPath:    filepath.Join(home, ".config", "mike", "models", "ggml-silero-vad.bin"),
 		Language:        "en",
 		Threads:         4,
 		MaxDuration:     30,

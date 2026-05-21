@@ -102,8 +102,9 @@ func runLiveDaemon(cfg *Config) {
 	if err != nil {
 		log.Fatalf("Model load error: %v", err)
 	}
+	transcriber.SetVADModel(cfg.VADModelPath)
 	defer transcriber.Close()
-	log.Printf("Model loaded")
+	log.Printf("Model loaded (VAD: %v)", cfg.VADModelPath != "")
 
 	stopCh := make(chan struct{})
 	go func() {

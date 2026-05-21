@@ -11,6 +11,10 @@ BINARY := mike
 MODEL_URL := https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
 MODEL_FILE := $(MODEL_DIR)/ggml-tiny.bin
 
+# Silero VAD model (~864KB, for voice activity detection)
+VAD_MODEL_URL := https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin
+VAD_MODEL_FILE := $(MODEL_DIR)/ggml-silero-vad.bin
+
 # Detect OS
 UNAME_S := $(shell uname -s)
 
@@ -61,14 +65,21 @@ $(MODEL_FILE):
 	curl -L -o $(MODEL_FILE) "$(MODEL_URL)"
 	@echo "Model downloaded: $(MODEL_FILE)"
 
+$(VAD_MODEL_FILE):
+	@echo "Downloading Silero VAD model (864KB)..."
+	mkdir -p $(MODEL_DIR)
+	curl -L -o $(VAD_MODEL_FILE) "$(VAD_MODEL_URL)"
+	@echo "VAD model downloaded: $(VAD_MODEL_FILE)"
+
 # Install model to the default config location
-install-model: $(MODEL_FILE)
-	@echo "Installing model to ~/.config/mike/models/..."
+install-model: $(MODEL_FILE) $(VAD_MODEL_FILE)
+	@echo "Installing models to ~/.config/mike/models/..."
 	mkdir -p ~/.config/mike/models
 	cp $(MODEL_FILE) ~/.config/mike/models/ggml-tiny.bin
-	@echo "Model installed."
+	cp $(VAD_MODEL_FILE) ~/.config/mike/models/ggml-silero-vad.bin
+	@echo "Models installed."
 
-model: $(MODEL_FILE) install-model
+model: $(MODEL_FILE) $(VAD_MODEL_FILE) install-model
 
 # ---- Build Go app ----
 
