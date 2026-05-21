@@ -43,21 +43,23 @@ func main() {
 		return
 	}
 
-	if detectDisplayServer() == "wayland" && !canReadInputDevices() {
+	if detectDisplayServer() == "wayland" {
 		fmt.Println("╔══════════════════════════════════════════════════════════╗")
-		fmt.Println("║  Wayland detected — evdev hotkey won't work.          ║")
+		fmt.Println("║  Wayland detected — daemon mode won't work.            ║")
+		fmt.Println("║  Use capture mode instead:                             ║")
 		fmt.Println("║                                                       ║")
-		fmt.Println("║  Use capture mode instead:                            ║")
-		fmt.Println("║    mike --capture 5                                    ║")
+		fmt.Println("║  1. Test it:                                           ║")
+		fmt.Println("║       mike --capture 5                                  ║")
 		fmt.Println("║                                                       ║")
-		fmt.Println("║  Bind it to Ctrl+Space in your desktop settings:      ║")
-		fmt.Println("║    Settings → Keyboard → Keyboard Shortcuts           ║")
-		fmt.Println("║    → Custom Shortcuts → Add (+)                        ║")
-		fmt.Println("║    Name: Mike  Command: /path/to/mike --capture 5      ║")
-		fmt.Println("║    Shortcut: Ctrl+Space                                ║")
+		fmt.Println("║  2. Then bind to Ctrl+Space in desktop settings:       ║")
+		fmt.Println("║       Settings → Keyboard → Keyboard Shortcuts         ║")
+		fmt.Println("║       → Custom Shortcuts → Add (+)                      ║")
+		fmt.Println("║       Name: Mike                                       ║")
+		fmt.Println("║       Command: /home/lee/Documents/mike/mike --capture 5  ║")
+		fmt.Println("║       Shortcut: Ctrl+Space                              ║")
 		fmt.Println("╚══════════════════════════════════════════════════════════╝")
 		fmt.Println()
-		fmt.Println("Or test the pipeline directly:")
+		fmt.Println("Also test the pipeline directly:")
 		fmt.Println("  mike --test-mic")
 		fmt.Println()
 		os.Exit(0)

@@ -3,11 +3,8 @@
 /voicewriter
 *.exe
 
-# Whisper C library build artifacts
-whisper.cpp/build/
-whisper.cpp/.git/
-whisper.cpp/*.o
-whisper.cpp/*.a
+# Whisper C library (cloned by Makefile during build)
+whisper.cpp/
 
 # Downloaded models
 models/ggml-*.bin
