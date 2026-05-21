@@ -193,7 +193,7 @@ func cleanTranscript(text string) string {
 // runStreamingLoop records continuously and transcribes overlapping windows.
 // New text is detected by comparing with previous transcription.
 func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcriber) {
-	buf := make([]float32, 2048) // small buffer for microphone reads (128ms)
+	buf := make([]float32, 2048) // 2048 frames = ~128ms at 16kHz
 
 	stream, err := portaudio.OpenDefaultStream(1, 0, SampleRate, len(buf), buf)
 	if err != nil {
@@ -208,7 +208,7 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 	}
 	defer stream.Stop()
 
-	// Drain stale data
+	// Drain stale audio
 	for i := 0; i < 10; i++ {
 		if err := stream.Read(); err != nil {
 			break
@@ -216,9 +216,27 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 	}
 
 	state := newStreamState()
-	lastTyped := "" // text we've already typed
+	lastTyped := ""
 
 	log.Printf("Streaming loop started")
+
+	// Audio reader goroutine — reads continuously and sends chunks to channel
+	audioCh := make(chan []float32, 64)
+	go func() {
+		for {
+			if err := stream.Read(); err != nil {
+				log.Printf("Audio read error: %v", err)
+				return
+			}
+			chunk := make([]float32, len(buf))
+			copy(chunk, buf)
+			select {
+			case audioCh <- chunk:
+			default:
+				// Channel full, drop chunk to avoid backpressure
+			}
+		}
+	}()
 
 	// Timer for processing intervals (~1 second)
 	ticker := time.NewTicker(time.Second)
@@ -228,20 +246,21 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 		select {
 		case <-stopCh:
 			log.Printf("Stop signal, flushing...")
-			// Do one final transcription of the last 2 seconds
 			final := state.getLastN(windowSize)
 			if len(final) > SampleRate/2 && rmsEnergy(final) > silenceThreshold {
 				text, _ := transcriber.Transcribe(final, cfg.Language, cfg.Threads)
 				text = cleanTranscript(text)
 				if text != "" && text != lastTyped {
-					lastTyped = text
 					log.Printf("Final: %q", text)
 					typedText(text, &lastTyped)
 				}
 			}
 			return
+
+		case chunk := <-audioCh:
+			state.writeSamples(chunk)
+
 		case <-ticker.C:
-			// Process the latest audio window
 			window := state.getLastN(windowSize)
 			if len(window) == 0 {
 				continue
@@ -265,7 +284,6 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 
 			log.Printf("Window: %q  (energy=%.4f)", text, energy)
 
-			// Find new text since last typing
 			newPart := findNewText(text, lastTyped)
 			if newPart == "" {
 				continue
@@ -273,15 +291,6 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 
 			log.Printf("New: %q", newPart)
 			typedText(newPart, &lastTyped)
-
-		default:
-			// Read audio from microphone
-			if err := stream.Read(); err != nil {
-				continue
-			}
-			chunk := make([]float32, len(buf))
-			copy(chunk, buf)
-			state.writeSamples(chunk)
 		}
 	}
 }
