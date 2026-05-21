@@ -221,8 +221,9 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 	log.Printf("Streaming loop started")
 
 	// Audio reader goroutine — reads continuously and sends chunks to channel
-	audioCh := make(chan []float32, 64)
+	audioCh := make(chan []float32, 256)
 	go func() {
+		total := 0
 		for {
 			if err := stream.Read(); err != nil {
 				log.Printf("Audio read error: %v", err)
@@ -230,10 +231,10 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 			}
 			chunk := make([]float32, len(buf))
 			copy(chunk, buf)
-			select {
-			case audioCh <- chunk:
-			default:
-				// Channel full, drop chunk to avoid backpressure
+			total += len(chunk)
+			audioCh <- chunk
+			if total%(16000*3) == 0 {
+				log.Printf("Audio reader: %d samples received", total)
 			}
 		}
 	}()
@@ -268,6 +269,7 @@ func runStreamingLoop(stopCh <-chan struct{}, cfg *Config, transcriber *Transcri
 
 			energy := rmsEnergy(window)
 			if energy < silenceThreshold {
+				log.Printf("Silent window (energy=%.4f, threshold=%.4f)", energy, silenceThreshold)
 				continue
 			}
 
